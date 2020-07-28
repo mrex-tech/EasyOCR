@@ -1,32 +1,38 @@
+# -*- coding: utf-8 -*-
+
 from .detection import get_detector, get_textbox
 from .imgproc import loadImage
 from .recognition import get_recognizer, get_text
-from .utils import group_text_box, get_image_list, calculate_md5
+from .utils import group_text_box, get_image_list, calculate_md5, eprint, get_paragraph
 import numpy as np
 import cv2
 import torch
-import urllib.request
 import os
-from pathlib import Path
+import sys
+
+if sys.version_info[0] == 2:
+    from io import open
+    from six.moves.urllib.request import urlretrieve
+    from pathlib2 import Path
+else:
+    from urllib.request import urlretrieve
+    from pathlib import Path
 
 BASE_PATH = os.path.dirname(__file__)
-MODULE_PATH = os.environ.get("MODULE_PATH", default=
+MODULE_PATH = os.environ.get("MODULE_PATH",
                              os.path.expanduser("~/.EasyOCR/"))
 Path(MODULE_PATH+'/model').mkdir(parents=True, exist_ok=True)
 
 # detector parameters
 DETECTOR_PATH = os.path.join(MODULE_PATH, 'model', 'craft_mlt_25k.pth')
-text_threshold = 0.7
-low_text = 0.4
-link_threshold = 0.4
-canvas_size = 2560
-mag_ratio = 1.
-poly = False
 
 # recognizer parameters
-latin_lang_list = ['af','az','bs','cs','cy','da','de','en','es','et','fr','ga','hr','hu','id','is','it','ku',\
-            'la','lt','lv','mi','ms','mt','nl','no','pl','pt','ro','sk','sl','sq','sv','sw','tl','tr','uz','vi']
-all_lang_list = latin_lang_list + ['th','ch_sim','ch_tra','ja','ko']
+latin_lang_list = ['af','az','bs','cs','cy','da','de','en','es','et','fr','ga',\
+                   'hr','hu','id','is','it','ku','la','lt','lv','mi','ms','mt',\
+                   'nl','no','oc','pl','pt','ro','rs_latin','sk','sl','sq',\
+                   'sv','sw','tl','tr','uz','vi']
+devanagari_lang_list = ['hi','mr','ne']
+all_lang_list = latin_lang_list + devanagari_lang_list + ['th','ch_sim','ch_tra','ja','ko']
 imgH = 64
 input_channel = 1
 output_channel = 512
@@ -44,8 +50,8 @@ model_url = {
     'japanese.pth': ('https://www.jaided.ai/read_download/japanese.pth', '6d891a4aad9cb7f492809515e4e9fd2e'),
     'korean.pth': ('https://www.jaided.ai/read_download/korean.pth', '45b3300e0f04ce4d03dda9913b20c336'),
     'thai.pth': ('https://www.jaided.ai/read_download/thai.pth', '40a06b563a2b3d7897e2d19df20dc709'),
+    'devanagari.pth': ('https://www.jaided.ai/read_download/devanagari.pth', 'db6b1f074fae3070f561675db908ac08'),
 }
-
 
 class Reader(object):
 
@@ -53,10 +59,10 @@ class Reader(object):
 
         if gpu is False:
             self.device = 'cpu'
-            print('Using CPU. Note: This module is much faster with a GPU.')
+            eprint('Using CPU. Note: This module is much faster with a GPU.')
         elif not torch.cuda.is_available():
             self.device = 'cpu'
-            print('CUDA not available - defaulting to CPU. Note: This module is much faster with a GPU.')
+            eprint('CUDA not available - defaulting to CPU. Note: This module is much faster with a GPU.')
         elif gpu is True:
             self.device = 'cuda'
         else:
@@ -88,6 +94,10 @@ class Reader(object):
             self.model_lang = 'korean'
             if set(lang_list) - set(['ko','en']) != set():
                 raise ValueError('Korean is only compatible with English, try lang_list=["ko","en"]')
+        elif set(lang_list) & set(devanagari_lang_list):
+            self.model_lang = 'devanagari'
+            if set(lang_list) - set(devanagari_lang_list+['en']) != set():
+                raise ValueError('Devanagari is only compatible with English, try lang_list=["hi","mr","ne","en"]')
         else: self.model_lang = 'latin'
 
         separator_list = {}
@@ -96,6 +106,11 @@ class Reader(object):
             'ÀÁÂÃÄÅÆÇÈÉÊËÍÎÑÒÓÔÕÖØÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿąęĮįıŁłŒœŠšųŽž'
             self.character = number+ symbol + all_char
             model_file = 'latin.pth'
+
+        elif self.model_lang == 'devanagari':
+            devanagari_char = '.ँंःअअंअःआइईउऊऋएऐऑओऔकखगघङचछजझञटठडढणतथदधनऩपफबभमयरऱलळवशषसह़ािीुूृॅेैॉोौ्ॐ॒क़ख़ग़ज़ड़ढ़फ़ॠ।०१२३४५६७८९॰'
+            self.character = number+ symbol + en_char + devanagari_char
+            model_file = 'devanagari.pth'
 
         elif  self.model_lang == 'chinese_tra':
             char_file = os.path.join(BASE_PATH, 'character', "ch_tra_char.txt")
@@ -148,7 +163,7 @@ class Reader(object):
             self.character = ''.join(separator_char) + symbol + en_char + th_char + th_number
             model_file = 'thai.pth'
         else:
-            print('invalid language')
+            eprint('invalid language')
 
         dict_list = {}
         for lang in lang_list:
@@ -166,29 +181,29 @@ class Reader(object):
         MODEL_PATH = os.path.join(MODULE_PATH, 'model', model_file)
         CORRUPT_MSG = 'MD5 hash mismatch, possible file corruption'
         if os.path.isfile(DETECTOR_PATH) == False:
-            print('Downloading detection model, please wait')
-            urllib.request.urlretrieve(model_url['detector'][0] , DETECTOR_PATH)
+            eprint('Downloading detection model, please wait')
+            urlretrieve(model_url['detector'][0] , DETECTOR_PATH)
             assert calculate_md5(DETECTOR_PATH) == model_url['detector'][1], CORRUPT_MSG
-            print('Download complete')
+            eprint('Download complete')
         elif calculate_md5(DETECTOR_PATH) != model_url['detector'][1]:
-            print(CORRUPT_MSG)
+            eprint(CORRUPT_MSG)
             os.remove(DETECTOR_PATH)
-            print('Re-downloading the detection model, please wait')
-            urllib.request.urlretrieve(model_url['detector'][0], DETECTOR_PATH)
+            eprint('Re-downloading the detection model, please wait')
+            urlretrieve(model_url['detector'][0], DETECTOR_PATH)
             assert calculate_md5(DETECTOR_PATH) == model_url['detector'][1], CORRUPT_MSG
         # check model file
         if os.path.isfile(MODEL_PATH) == False:
-            print('Downloading recognition model, please wait')
-            urllib.request.urlretrieve(model_url[model_file][0], MODEL_PATH)
+            eprint('Downloading recognition model, please wait')
+            urlretrieve(model_url[model_file][0], MODEL_PATH)
             assert calculate_md5(MODEL_PATH) == model_url[model_file][1], CORRUPT_MSG
-            print('Download complete')
+            eprint('Download complete')
         elif calculate_md5(MODEL_PATH) != model_url[model_file][1]:
-            print(CORRUPT_MSG)
+            eprint(CORRUPT_MSG)
             os.remove(MODEL_PATH)
-            print('Re-downloading the recognition model, please wait')
-            urllib.request.urlretrieve(model_url[model_file][0], MODEL_PATH)
+            eprint('Re-downloading the recognition model, please wait')
+            urlretrieve(model_url[model_file][0], MODEL_PATH)
             assert calculate_md5(MODEL_PATH) == model_url[model_file][1], CORRUPT_MSG
-            print('Download complete')
+            eprint('Download complete')
 
         self.detector = get_detector(DETECTOR_PATH, self.device)
         self.recognizer, self.converter = get_recognizer(input_channel, output_channel,\
@@ -196,16 +211,27 @@ class Reader(object):
                                                          dict_list, MODEL_PATH, device = self.device)
 
     def readtext(self, image, decoder = 'greedy', beamWidth= 5, batch_size = 1,\
+                 workers = 0, allowlist = None, blocklist = None, detail = 1,\
+                 paragraph = False,\
                  contrast_ths = 0.1,adjust_contrast = 0.5, filter_ths = 0.003,\
-                 workers = 0, whitelist = None, blacklist = None):
+                 text_threshold = 0.7, low_text = 0.4, link_threshold = 0.4,\
+                 canvas_size = 2560, mag_ratio = 1.,\
+                 slope_ths = 0.1, ycenter_ths = 0.5, height_ths = 0.5,\
+                 width_ths = 0.5, add_margin = 0.1):
         '''
         Parameters:
         file: file path or numpy-array or a byte stream object
         '''
 
         if type(image) == str:
-            img = loadImage(image)
-            img_cv_grey = cv2.imread(image, cv2.IMREAD_GRAYSCALE)
+            if image.startswith('http://') or image.startswith('https://'):
+                tmp, _ = urlretrieve(image)
+                img_cv_grey = cv2.imread(tmp, cv2.IMREAD_GRAYSCALE)
+                os.remove(tmp)
+            else:
+                img_cv_grey = cv2.imread(image, cv2.IMREAD_GRAYSCALE)
+                image = os.path.expanduser(image)
+            img = loadImage(image)  # can accept URL
         elif type(image) == bytes:
             nparr = np.frombuffer(image, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -217,22 +243,29 @@ class Reader(object):
             img_cv_grey = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         text_box = get_textbox(self.detector, img, canvas_size, mag_ratio, text_threshold,\
-                               link_threshold, low_text, poly, self.device)
-        horizontal_list, free_list = group_text_box(text_box, width_ths = 0.5, add_margin = 0.1)
+                               link_threshold, low_text, False, self.device)
+        horizontal_list, free_list = group_text_box(text_box, slope_ths, ycenter_ths, height_ths, width_ths, add_margin)
 
         # should add filter to screen small box out
 
         image_list, max_width = get_image_list(horizontal_list, free_list, img_cv_grey, model_height = imgH)
 
-        if whitelist:
-            ignore_char = ''.join(set(self.character)-set(whitelist))
-        elif blacklist:
-            ignore_char = ''.join(set(blacklist))
+        if allowlist:
+            ignore_char = ''.join(set(self.character)-set(allowlist))
+        elif blocklist:
+            ignore_char = ''.join(set(blocklist))
         else:
             ignore_char = ''.join(set(self.character)-set(self.lang_char))
 
         if self.model_lang in ['chinese_tra','chinese_sim', 'japanese', 'korean']: decoder = 'greedy'
-        result = get_text(self.character, imgH, max_width, self.recognizer, self.converter, image_list,\
+        result = get_text(self.character, imgH, int(max_width), self.recognizer, self.converter, image_list,\
                       ignore_char, decoder, beamWidth, batch_size, contrast_ths, adjust_contrast, filter_ths,\
                       workers, self.device)
-        return result
+
+        if paragraph:
+            result = get_paragraph(result)
+
+        if detail == 0:
+            return [item[1] for item in result]
+        else:
+            return result
